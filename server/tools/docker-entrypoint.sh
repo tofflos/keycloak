@@ -1,8 +1,33 @@
 #!/bin/bash
 
+# usage: file_env VAR [DEFAULT]
+#    ie: file_env 'XYZ_DB_PASSWORD' 'example'
+# (will allow for "$XYZ_DB_PASSWORD_FILE" to fill in the value of
+#  "$XYZ_DB_PASSWORD" from a file, especially for Docker's secrets feature)
+file_env() {
+	local var="$1"
+	local fileVar="${var}_FILE"
+	local def="${2:-}"
+	if [ "${!var:-}" ] && [ "${!fileVar:-}" ]; then
+		echo >&2 "error: both $var and $fileVar are set (but are exclusive)"
+		exit 1
+	fi
+	local val="$def"
+	if [ "${!var:-}" ]; then
+		val="${!var}"
+	elif [ "${!fileVar:-}" ]; then
+		val="$(< "${!fileVar}")"
+	fi
+	export "$var"="$val"
+	unset "$fileVar"
+}
+
 ##################
 # Add admin user #
 ##################
+
+file_env 'KEYCLOAK_USER'
+file_env 'KEYCLOAK_PASSWORD'
 
 if [ $KEYCLOAK_USER ] && [ $KEYCLOAK_PASSWORD ]; then
     /opt/jboss/keycloak/bin/add-user-keycloak.sh --user $KEYCLOAK_USER --password $KEYCLOAK_PASSWORD
@@ -40,7 +65,10 @@ if [ -z "$BIND" ]; then
     BIND=$(hostname -i)
 fi
 if [ -z "$BIND_OPTS" ]; then
-    BIND_OPTS="-Djboss.bind.address=$BIND -Djboss.bind.address.private=$BIND"
+    for BIND_IP in $BIND
+    do
+        BIND_OPTS+=" -Djboss.bind.address=$BIND_IP -Djboss.bind.address.private=$BIND_IP "
+    done
 fi
 SYS_PROPS+=" $BIND_OPTS"
 
@@ -48,14 +76,17 @@ SYS_PROPS+=" $BIND_OPTS"
 # Configuration #
 #################
 
-# If the "-c" parameter is not present, append the HA profile.
-if echo "$@" | egrep -v -- "-c "; then
-    SYS_PROPS+=" -c standalone-ha.xml"
+# If the server configuration parameter is not present, append the HA profile.
+if echo "$@" | egrep -v -- '-c |-c=|--server-config |--server-config='; then
+    SYS_PROPS+=" -c=standalone-ha.xml"
 fi
 
 ############
 # DB setup #
 ############
+
+file_env 'DB_USER'
+file_env 'DB_PASSWORD'
 
 # Lower case DB_VENDOR
 DB_VENDOR=`echo $DB_VENDOR | tr A-Z a-z`
@@ -133,6 +164,7 @@ fi
 
 /opt/jboss/tools/x509.sh
 /opt/jboss/tools/jgroups.sh $JGROUPS_DISCOVERY_PROTOCOL $JGROUPS_DISCOVERY_PROPERTIES
+/opt/jboss/tools/autorun.sh
 
 ##################
 # Start Keycloak #
